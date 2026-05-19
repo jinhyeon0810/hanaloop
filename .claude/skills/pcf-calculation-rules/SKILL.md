@@ -1,78 +1,74 @@
 ---
 name: pcf-calculation-rules
-description: Canonical rules for product carbon footprint calculations in the Hanaloop dashboard — emission factor selection, unit conversion, activity-to-emission math, and edge cases. Use when computing or reviewing kgCO2e values, matching activities to factors, or converting between units.
+description: PCF calculation rules for the CT-045 monitor — formula, factor matching, aggregation, and error handling. Use when computing or reviewing kgCO2e values, matching activities to factors, or rendering totals.
 ---
 
-# PCF Calculation Rules
+# PCF Calculation Rules (CT-045)
 
-Canonical math and matching rules for the Hanaloop PCF Dashboard. All emission outputs are in **kgCO2e** unless explicitly stated.
+Dataset: monthly activities across 2025 (Jan–Aug), three activity types (전기/원소재/운송), four seeded factors with no regional or temporal variance.
 
-## 1. Activity → Emission formula
+## 1. Formula
 
 ```
-emissions_kgco2e = activity_quantity_in_factor_base_unit × factor_value
+emissions_kgco2e = quantity × factor_value
 ```
 
-Concretely per activity type:
+| Activity type   | Quantity unit | Factor unit           |
+|-----------------|---------------|-----------------------|
+| `electricity`   | kWh           | kgCO2e per kWh        |
+| `raw_material`  | kg            | kgCO2e per kg         |
+| `transport`     | ton-km        | kgCO2e per ton-km     |
 
-| Activity type | Input unit | Factor unit                | Math                                    |
-|---------------|------------|----------------------------|-----------------------------------------|
-| electricity   | kWh        | kgCO2e per kWh             | `kWh × factor`                          |
-| raw_material  | kg         | kgCO2e per kg              | `kg × factor`                           |
-| transport     | ton-km     | kgCO2e per ton-km          | `(mass_ton × distance_km) × factor`     |
+Inputs always arrive in the factor's base unit (no MWh, g, ton, kg-km in the dataset). **No unit conversion implemented.** A future input row carrying a non-base unit returns `ERR_UNIT_MISMATCH`, never auto-converted.
 
-## 2. Unit conversion table (input → factor base unit)
+## 2. Factor matching
 
-| From         | To       | Conversion       |
-|--------------|----------|------------------|
-| MWh          | kWh      | × 1000           |
-| Wh           | kWh      | × 0.001          |
-| g            | kg       | × 0.001          |
-| ton (metric) | kg       | × 1000           |
-| ton-km       | ton-km   | identity         |
-| kg-km        | ton-km   | × 0.001          |
+Given an activity `(type, description)`:
 
-Rules:
-- Conversion happens **before** factor multiplication.
-- Imperial units (lb, mile) are **not** supported — reject at validation with `ERR_UNIT_UNSUPPORTED`.
-- Mixed units in a single row are **not** auto-coerced — reject with `ERR_UNIT_MISMATCH`.
+1. Find factor where `factor.activity_type == activity.type` AND `factor.sub_category == activity.description` (exact string match — no normalization).
+2. Exactly one match → use it.
+3. Zero matches → return `ERR_FACTOR_NOT_FOUND` with the search key.
 
-## 3. Factor selection algorithm
+No region or date filtering — all seeded factors are valid throughout the dataset. `"플라스틱1"` and `"플라스틱 1"` are different strings (whitespace matters); typos in description fail the lookup.
 
-Given an activity row `(type, region, year, sub_category, unit)`:
+**Seeded factors:**
 
-1. Filter factors by `activity_type == type`.
-2. Filter by `region` exact match, else `region == 'GLOBAL'` fallback.
-3. Filter by `valid_from ≤ activity_date ≤ valid_to` (or `valid_to IS NULL` for current).
-4. Filter by `sub_category` exact match if specified, else factors with `sub_category IS NULL`.
-5. If exactly one factor remains → use it.
-6. If zero factors remain → return `ERR_FACTOR_NOT_FOUND` with the search key.
-7. If multiple factors remain → return `ERR_FACTOR_AMBIGUOUS`. Never auto-pick.
+| activity_type   | sub_category | value | unit              | source              |
+|-----------------|--------------|-------|-------------------|---------------------|
+| `electricity`   | 한국전력     | 0.456 | kgCO2e/kWh        | Hanaloop 과제 제공  |
+| `raw_material`  | 플라스틱 1   | 2.3   | kgCO2e/kg         | Hanaloop 과제 제공  |
+| `raw_material`  | 플라스틱 2   | 3.2   | kgCO2e/kg         | Hanaloop 과제 제공  |
+| `transport`     | 트럭         | 3.5   | kgCO2e/ton-km     | Hanaloop 과제 제공  |
 
-## 4. Factor versioning
+## 3. Factor schema (versioning-ready)
 
-- Factors are **immutable** once referenced by any activity.
-- Updating a factor value = inserting a new factor row with `valid_from = today` and setting the previous row's `valid_to = today - 1`.
-- Existing activities continue to reference the prior factor version (by `factor_id`), not by lookup. Historical totals don't drift.
+No supersession workflow (factors are immutable seed data), but the schema supports future versioning:
 
-## 5. Aggregation rules
+- `valid_from` (date) — default `2025-01-01` for seed
+- `valid_to` (date, nullable) — `NULL` = currently effective
+- `source` (string, NOT NULL) — every factor cites its origin
 
-- **Per-product total**: sum kgCO2e across all activities for that product, within the selected period.
-- **By scope**: group activities by `scope` field (`raw_material`, `processing`, `transport`).
-- **Executive display**: if total ≥ 1000 kgCO2e, display as `t CO2e` (= kg / 1000) with 2 decimals. Otherwise kgCO2e with 1 decimal.
-- **Comparisons**: period-over-period uses absolute kgCO2e delta and percentage. Show both.
+Schema is ready, no UI to mutate factors.
 
-## 6. Edge cases (always return structured error, never silent defaults)
+## 4. Aggregation
 
-| Situation                                      | Error code              |
-|------------------------------------------------|-------------------------|
-| Activity unit not in conversion table          | `ERR_UNIT_UNSUPPORTED`  |
-| Activity unit incompatible with factor unit    | `ERR_UNIT_MISMATCH`     |
-| No factor matches the search key               | `ERR_FACTOR_NOT_FOUND`  |
-| Multiple factors match (ambiguous)             | `ERR_FACTOR_AMBIGUOUS`  |
-| Negative or zero activity quantity             | `ERR_QUANTITY_INVALID`  |
-| Activity date outside any factor's validity    | `ERR_FACTOR_EXPIRED`    |
+- **Total**: sum `emissions_kgco2e` across all activities in the selected period.
+- **By activity type**: group by `activity_type` — used by the dashboard chart.
+- **Display unit**:
+  - Total ≥ 1000 kgCO2e → `t CO2e` with 2 decimals
+  - Total < 1000 kgCO2e → `kgCO2e` with 1 decimal
+- **Period selection**: 2025 Q1 / Q2 / Q3 / YTD (2025-01-01 to most recent activity).
 
-## 7. Sources
+## 5. Errors
 
-Every factor row must record `source` (e.g., `Ecoinvent 3.10`, `IPCC AR6 GWP100`, `K-LCI 2023`). Calculations carry this source through to the report so an auditor can trace any kgCO2e back to a citable factor.
+| Code                     | Trigger                                                                   |
+|--------------------------|---------------------------------------------------------------------------|
+| `ERR_FACTOR_NOT_FOUND`   | Activity `description` doesn't match any factor's `sub_category` exactly  |
+| `ERR_QUANTITY_INVALID`   | `quantity` ≤ 0 or NaN                                                     |
+| `ERR_UNIT_MISMATCH`      | Unit not the factor's base unit (e.g., MWh for electricity instead of kWh)|
+
+Always return structured errors — never substitute a default value.
+
+## 6. Audit trail
+
+Every aggregated number on the dashboard must trace to `(activity row × factor row)`. The factor's `source` carries through to any explanation UI so that "이 숫자는 어디서 나왔나요?" is answerable.
