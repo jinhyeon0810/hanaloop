@@ -4,15 +4,29 @@
 
 활동 데이터(원소재·가공 전기·출고 운송)를 입력 또는 Excel 임포트하면 배출계수와 매칭해 kgCO2e를 자동 산정하고, lifecycle 단계별 기여도와 시간 추이를 두 페르소나(실무자/경영자) 관점으로 시각화합니다.
 
+## 🚀 라이브 데모
+
+**https://hanaloop-nu.vercel.app**
+
+설치 없이 바로 체험 가능. 페르소나 전환은 우상단 토글 또는 `?role=operator` / `?role=executive` 쿼리.
+
 자세한 요구사항은 [`docs/REQUIREMENTS.md`](./docs/REQUIREMENTS.md) 참고.
 
-## 빠른 실행 (4단계)
+## 로컬에서 실행하기
 
-> 사전 요구: Docker Desktop 실행 중
+### 사전 요구사항
+
+| 항목 | 버전·요구 |
+| --- | --- |
+| **Node.js** | 20 LTS 이상 (`node -v`) |
+| **yarn** | 1.22+ (`yarn -v`) — npm/pnpm 미지원 |
+| **Docker Desktop** | 실행 중이어야 함 (Postgres 컨테이너 구동용) |
+
+### 빠른 실행 (4단계)
 
 1. **클론 + 환경변수 + 의존성**
    ```sh
-   git clone <repo-url> && cd hanaloop
+   git clone https://github.com/jinhyeon0810/hanaloop.git && cd hanaloop
    cp .env.example .env
    yarn install
    ```
@@ -31,6 +45,16 @@
    → http://localhost:3000 에서 확인.
 
 > 개발 중에는 `yarn dev`로 빠른 핫리로드 사용.
+
+### 트러블슈팅
+
+| 증상 | 원인 | 해결 |
+| --- | --- | --- |
+| `yarn install`에서 `engine "node" is incompatible` | Node 버전이 너무 낮음 | Node 20 LTS 이상으로 업그레이드 (`nvm install 20`) |
+| `yarn start` 시 500 + `Environment variable not found: DATABASE_URL` | `.env` 파일 없음 | `cp .env.example .env` 실행 |
+| 페이지 로드 시 `Can't reach database server` | Docker DB 미실행 | `yarn db:up` 실행 후 `docker ps`로 컨테이너 확인 |
+| 활동/계수가 빈 화면 | 시드 미적용 | `yarn prisma db seed` |
+| 포트 5433 충돌 | 다른 Postgres가 5433 점유 중 | `docker-compose.yml`의 `5433:5432` 좌측 숫자를 변경하고 `.env`도 동일하게 수정 |
 
 ## 시스템 개요
 
