@@ -1,0 +1,49 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DATABASE_URL_UNPOOLED")
+}
+
+enum ActivityType {
+  electricity
+  raw_material
+  transport
+}
+
+model EmissionFactor {
+  id           String       @id @default(cuid())
+  activityType ActivityType
+  subCategory  String
+  value        Decimal      @db.Decimal(12, 6)
+  unit         String
+  validFrom    DateTime     @db.Date
+  source       String
+  createdAt    DateTime     @default(now())
+
+  activities Activity[]
+
+  @@unique([activityType, subCategory, validFrom])
+  @@index([activityType])
+}
+
+model Activity {
+  id           String       @id @default(cuid())
+  date         DateTime     @db.Date
+  activityType ActivityType
+  description  String
+  quantity     Decimal      @db.Decimal(14, 4)
+  unit         String
+
+  factor   EmissionFactor @relation(fields: [factorId], references: [id])
+  factorId String
+
+  createdAt DateTime @default(now())
+
+  @@index([date])
+  @@index([activityType])
+  @@index([date, activityType])
+}
