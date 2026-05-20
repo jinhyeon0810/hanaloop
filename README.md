@@ -60,7 +60,7 @@
 
 - **인증 없음 — 페르소나는 URL 파라미터 (`?role=operator|executive`).** 과제 범위로 권한 제어 생략, 페르소나는 뷰 모드로 한정. 실 배포 시 RBAC 추가 필요.
 - **Add only (CRUD 중 CR만 구현).** PCF는 회계와 유사한 감사 추적 도메인이라 활동 데이터의 임의 수정·삭제를 의도적으로 막음. 정정은 Excel 재임포트 + dedup으로 처리.
-- **계수는 DB seed로만 관리.** 계수 편집 UI는 범위 밖. 스키마는 supersession 가능하도록 `valid_from`·`valid_to`·`source` 컬럼을 두지만 단일 버전으로 운영.
+- **계수는 DB seed로만 관리.** 계수 편집 UI는 범위 밖. 스키마는 `(활동 유형, 세부 카테고리, validFrom)` 복합 유니크로 supersession을 받을 수 있게 두지만 현재는 단일 버전으로 운영.
 - **부분 성공 임포트.** Excel 임포트는 행 단위 검증 실패가 전체 파일을 막지 않음. Accepted/Duplicates/Rejected 3구역으로 결과 표시.
 
 ### 화면 구성
@@ -73,18 +73,14 @@
 | `/activities/import` | operator         | Excel/CSV 업로드 + 부분 성공 결과                                      |
 | `/factors`           | 공통             | 배출계수 read-only 목록                                                |
 
-### 데이터 모델 (ERD 개요)
+### 데이터 모델
 
 ```
-Product 1 ─── * Activity * ─── 1 EmissionFactor
-                  │
-                  └── 1 ImportJob (nullable)
+Activity * ─── 1 EmissionFactor
 ```
 
-- **Product:** 단일 row (CT-045)
-- **Activity:** 일자, 유형, 설명, 량, 단위, 매칭된 factor_id, 캐시된 kgCO2e
-- **EmissionFactor:** 유형, sub_category, 값, 단위, valid_from/valid_to, source (immutable)
-- **ImportJob:** 업로드 파일 해시·일시·결과 카운트
+- **Activity**: 일자, 활동 유형(`electricity` / `raw_material` / `transport`), 설명, 수량, 단위, 매칭된 `factorId`. kgCO2e는 저장하지 않고 매번 `quantity × factor.value`로 계산합니다.
+- **EmissionFactor**: 활동 유형, 세부 카테고리(`subCategory`), 값, 단위, 유효 시작일(`validFrom`), 출처(`source`). `(activityType, subCategory, validFrom)` 조합이 유니크합니다.
 
 상세 스키마는 `prisma/schema.prisma` 참고.
 
@@ -154,20 +150,17 @@ AI 활용으로 초기 셋업·요구사항 정리 속도가 크게 빨라졌지
 
 AI 에이전트·스킬 환경을 셋업하고, AI가 생성한 코드를 매 단계 검증·교정하는 과정에 시간이 크게 들었습니다. 단순히 결과물을 수용하지 않고 PCF 도메인 정합성, Next.js 16의 변경점, Prisma 스키마 결정 등을 다시 검토하는 절차가 별도 비중을 차지했습니다.
 
-### 다음 사이클 리팩토링 로드맵
+### 시간이 더 있다면 정리하고 싶은 부분
 
-전반적인 시스템 구조를 빠르게 갖추는 구현 위주로 진행하다 보니 프론트엔드 코드 구조는 충분히 다듬지 못했습니다. 시간이 주어진다면 다음 우선순위로 정리해 보고 싶습니다.
+전체 동작을 빠르게 만드는 데 집중하다 보니 프론트엔드 코드 구조까지는 충분히 손이 가지 못했습니다. 시간이 더 주어진다면 이 순서로 다듬어 보고 싶습니다.
 
-1. **검증 로직 단일화 (Zod)**
-   `app/actions/activity.ts`, `app/api/activities/route.ts`, `lib/import/validate.ts`에 비슷한 행 검증이 손으로 복사돼 있어 한 곳만 고치면 다른 두 곳이 표류할 위험이 있습니다. 단일 Zod 스키마를 Server Action·REST·Import 세 진입점이 공유하는 진실의 원천으로 만들고, 에러 형태(`Record<index, RowError>` vs `RowError[]`)도 통일합니다.
+1. **활동 검증 로직을 한 곳으로**
+   지금은 비슷한 행 검증이 폼(`actions/activity.ts`), REST API(`api/activities/route.ts`), 엑셀 임포트(`lib/import/validate.ts`) 세 군데에 따로 적혀 있습니다. 한 곳만 고치고 다른 쪽을 빠뜨리기 쉬워서, Zod 스키마 하나를 셋이 같이 쓰도록 묶고 싶습니다. 에러 응답 형식도 통일성이 필요하다고 생각합니다.
 
-2. **도메인 메타 단일 객체로 통합**
-   `ActivityType`의 라벨·단위·생애주기 라벨·색상·한글 매핑이 5~6개 파일에 나뉘어 있어 새 활동 유형을 추가하려면 산탄총 변경이 발생합니다. `ACTIVITY_TYPE_META: Record<ActivityType, {label, koLabel, lifecycleLabel, unit, color, order}>` 단일 객체로 합쳐 변경 지점을 한 곳으로 모읍니다.
+2. **활동 유형 관련 데이터를 한 객체로 모으기**
+   전기/원소재/운송 같은 활동 유형의 한글 이름, 단위, 색상, 생애주기 단계 라벨이 5~6개 파일에 흩어져 있습니다. 새 유형을 하나 추가하려면 여기저기 다 찾아 고쳐야 하는데, `ACTIVITY_TYPE_META` 같은 객체 하나에 모으면 한 군데만 손보면 끝납니다.
 
-3. **`import-form.tsx` 책임 분해**
-   드롭존·파일 pill·결과 뷰·거부 행 테이블·CSV 내보내기가 한 컴포넌트(약 420줄)에 혼재해 있습니다. `_components/`로 5~6개 단위로 쪼개 각 책임을 격리합니다.
+3. **`import-form.tsx` 쪼개기**
+   한 컴포넌트(약 420줄)에 파일 업로드 영역, 결과 표시, 거부된 행 목록, CSV 다운로드가 모두 들어 있습니다. 역할별로 작은 컴포넌트로 나누면 읽기도 수정하기도 편해질 것이라 생각합니다.
 
-4. **OpenAPI 자동 생성**
-   현재 손으로 작성한 OpenAPI 스펙은 이미 코드와 표류 중입니다(예: `period` enum에서 `q4` 누락). `zod-to-openapi`로 1번의 Zod 스키마에서 스펙을 자동 생성하고, REST 라우트는 같은 스키마를 쓰는 얇은 어댑터로 정리합니다.
-
-이 순서로 가면 새 활동 유형 추가·검증 규칙 변경·API 진입점 추가 같은 변경 비용이 크게 줄어들고, 코드-스펙 일관성도 자동으로 유지됩니다.
+이렇게 정리되면 새 활동 유형을 추가하거나 검증 규칙을 바꿀 때 손볼 곳이 줄어들고, 코드 의도도 더 명확해질 것이라 생각합니다.
